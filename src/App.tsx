@@ -80,6 +80,9 @@ export default function App() {
   const [loadingStep, setLoadingStep] = useState<string>("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Sidebar state for mobile drawer and desktop collapse
+  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
+
   // Fate trajectory options state
   const [fateOptions, setFateOptions] = useState<string[]>(() => {
     const saved = localStorage.getItem("luoyun_fate_options");
@@ -831,7 +834,7 @@ export default function App() {
   };
 
   return (
-    <div id="app-root" className={`min-h-screen ${themeClasses.appBg} flex flex-col transition-all duration-500 relative font-serif`}>
+    <div id="app-root" className={`min-h-screen ${themeClasses.appBg} flex transition-all duration-500 relative font-serif overflow-x-hidden`}>
       
       {/* Decorative luxury gradient background glow */}
       <div className="absolute inset-0 pointer-events-none opacity-10 overflow-hidden">
@@ -839,10 +842,82 @@ export default function App() {
         <div className="absolute bottom-0 right-0 w-96 h-96 bg-[#C9A66B]/5 rounded-full blur-3xl"></div>
       </div>
 
-      {/* Top Header Section */}
-      <header className={`z-10 border-b ${themeClasses.dividerColor} ${themeClasses.cardBg} px-8 py-4 flex items-center justify-between transition-all duration-300`}>
-        <div className="flex items-center space-x-4">
-          <div className="p-2 border border-[#C9A66B]/30 rounded-lg">
+      {/* Mobile Drawer Backdrop */}
+      {isSidebarOpen && (
+        <div 
+          onClick={() => setIsSidebarOpen(false)}
+          className="lg:hidden fixed inset-0 bg-black/60 backdrop-blur-xs z-40 transition-all duration-300 animate-fadeIn"
+        />
+      )}
+
+      {/* Left Sidebar: Scroll/Chapter Directory */}
+      <aside className={`
+        fixed lg:sticky top-0 left-0 z-50 lg:z-30
+        w-64 h-screen shrink-0 border-r ${themeClasses.dividerColor} ${themeClasses.cardBg}
+        flex flex-col transition-all duration-300 bg-black/20 backdrop-blur-md
+        ${isSidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}
+      `}>
+        {/* Sidebar Header */}
+        <div className={`p-6 border-b ${themeClasses.dividerColor} flex items-center justify-between`}>
+          <div className="flex items-center space-x-2">
+            <BookOpenText className={`w-4 h-4 ${themeClasses.accentText}`} />
+            <span className="text-xs font-bold tracking-[0.2em] uppercase text-[#E0D8D0] font-sans">天机卷轴</span>
+          </div>
+          <span className="text-[9px] px-2 py-0.5 rounded bg-white/5 border border-white/10 text-white/50 font-sans">
+            共 {chapters.length} 卷
+          </span>
+        </div>
+
+        {/* Chapters list */}
+        <div className="flex-1 overflow-y-auto py-3 space-y-1 pr-1">
+          {chapters.map((chap) => {
+            const isActive = chap.id === selectedId;
+            return (
+              <button
+                key={chap.id}
+                onClick={() => {
+                  setSelectedId(chap.id);
+                  setIsSidebarOpen(false);
+                }}
+                className={`w-full text-left px-5 py-3 border-l-2 transition-all flex items-start justify-between font-serif ${
+                  isActive
+                    ? "border-[#C9A66B] bg-[#C9A66B]/5 text-[#C9A66B] font-medium"
+                    : "border-transparent text-[#E0D8D0]/70 hover:bg-white/5 hover:text-[#E0D8D0]"
+                }`}
+              >
+                <div className="space-y-0.5 pr-2">
+                  <div className={`text-[9px] uppercase tracking-wider font-sans opacity-60 ${isActive ? "text-[#C9A66B]" : themeClasses.textMuted}`}>
+                    第 {chap.id} 卷
+                  </div>
+                  <div className="text-[11px] leading-relaxed line-clamp-2 break-all">
+                    {chap.title.includes("：") ? chap.title.split("：")[1] : chap.title}
+                  </div>
+                </div>
+                {chap.isAiGenerated && (
+                  <Sparkles className="w-3 h-3 text-[#C9A66B] shrink-0 mt-0.5 animate-pulse" />
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </aside>
+
+      {/* Right Column: Main Content (Header + Grid) */}
+      <div className="flex-1 flex flex-col min-w-0 min-h-screen">
+        {/* Top Header Section */}
+        <header className={`z-10 border-b ${themeClasses.dividerColor} ${themeClasses.cardBg} px-8 py-4 flex items-center justify-between transition-all duration-300`}>
+          <div className="flex items-center space-x-4">
+            {/* Mobile menu toggle button */}
+            <button
+              onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+              className={`lg:hidden p-2 rounded border ${themeClasses.accentBorder} text-[#E0D8D0]/70 hover:text-[#E0D8D0] hover:bg-white/5 transition-all mr-1`}
+              title="展开章节目录"
+            >
+              <BookOpen className="w-4 h-4" />
+            </button>
+
+            <div className="p-2 border border-[#C9A66B]/30 rounded-lg">
+              <Feather className={`w-5 h-5 ${themeClasses.accentText}`} />
             <Feather className={`w-5 h-5 ${themeClasses.accentText}`} />
           </div>
           <div>
@@ -1272,10 +1347,10 @@ export default function App() {
         </div>
       )}
 
-      {/* Modern minimal footer */}
       <footer className={`text-center py-4 text-[9px] ${themeClasses.textMuted} tracking-[0.35em] uppercase border-t ${themeClasses.dividerColor} relative z-10 bg-black/20 font-sans`}>
         落云宗翠竹轩出品 © 2026 落云修仙传：灵茶秘话 • v4.2 BOLD TYPOGRAPHY EDITION
       </footer>
+      </div>
     </div>
   );
 }
