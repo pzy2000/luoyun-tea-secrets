@@ -45,7 +45,10 @@ export default function App() {
   });
 
   // Selected chapter
-  const [selectedId, setSelectedId] = useState<number>(1);
+  const [selectedId, setSelectedId] = useState<number>(() => {
+    const saved = localStorage.getItem("luoyun_selected_id");
+    return saved ? Number(saved) : 1;
+  });
   const currentChapter = chapters.find(c => c.id === selectedId) || chapters[0] || INITIAL_CHAPTERS[0];
 
   // Settings state
@@ -82,6 +85,10 @@ export default function App() {
 
   // Sidebar state for mobile drawer and desktop collapse
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
+
+  // Synchronization states
+  const [syncStatus, setSyncStatus] = useState<"synced" | "syncing" | "error" | "idle">("idle");
+  const [isLoadedFromServer, setIsLoadedFromServer] = useState<boolean>(false);
 
   // Fate trajectory options state
   const [fateOptions, setFateOptions] = useState<string[]>(() => {
@@ -124,6 +131,113 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("luoyun_fate_options", JSON.stringify(fateOptions));
   }, [fateOptions]);
+
+  // Persist selectedId
+  useEffect(() => {
+    localStorage.setItem("luoyun_selected_id", String(selectedId));
+  }, [selectedId]);
+
+  // Pull progress from server
+  const pullFromServer = async (showStatus = true) => {
+    if (showStatus) setSyncStatus("syncing");
+    try {
+      const baseUrl = settings.apiUrl && settings.apiUrl.trim() !== "" ? settings.apiUrl : "";
+      const res = await fetch(`${baseUrl}/api/sync`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.chapters && data.chapters.length > 0) {
+          setChapters(data.chapters);
+          if (data.selectedId) setSelectedId(data.selectedId);
+          if (data.fateOptions) setFateOptions(data.fateOptions);
+          if (showStatus) setSyncStatus("synced");
+          return data;
+        }
+      }
+      if (showStatus) setSyncStatus("error");
+    } catch (e) {
+      console.error("Failed to pull sync from server:", e);
+      if (showStatus) setSyncStatus("error");
+    }
+    return null;
+  };
+
+  // Initial Sync from server
+  useEffect(() => {
+    const initSync = async () => {
+      setSyncStatus("syncing");
+      const serverData = await pullFromServer(false);
+      if (serverData) {
+        setSyncStatus("synced");
+      } else {
+        // Server is empty, upload local storage state to initialize the database
+        try {
+          const baseUrl = settings.apiUrl && settings.apiUrl.trim() !== "" ? settings.apiUrl : "";
+          const res = await fetch(`${baseUrl}/api/sync`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              chapters,
+              selectedId,
+              fateOptions
+            })
+          });
+          if (res.ok) {
+            setSyncStatus("synced");
+          } else {
+            setSyncStatus("error");
+          }
+        } catch (e) {
+          console.error("Failed to push initial sync:", e);
+          setSyncStatus("error");
+        }
+      }
+      setIsLoadedFromServer(true);
+    };
+    initSync();
+  }, [settings.apiUrl]);
+
+  // Push changes to server (debounced)
+  useEffect(() => {
+    if (!isLoadedFromServer) return;
+
+    const pushSync = async () => {
+      setSyncStatus("syncing");
+      try {
+        const baseUrl = settings.apiUrl && settings.apiUrl.trim() !== "" ? settings.apiUrl : "";
+        const res = await fetch(`${baseUrl}/api/sync`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chapters,
+            selectedId,
+            fateOptions
+          })
+        });
+        if (res.ok) {
+          setSyncStatus("synced");
+        } else {
+          setSyncStatus("error");
+        }
+      } catch (e) {
+        console.error("Failed to push sync:", e);
+        setSyncStatus("error");
+      }
+    };
+
+    const timer = setTimeout(pushSync, 500);
+    return () => clearTimeout(timer);
+  }, [chapters, selectedId, fateOptions, isLoadedFromServer, settings.apiUrl]);
+
+  // Auto sync when browser tab gains focus
+  useEffect(() => {
+    const onFocus = () => {
+      if (isLoadedFromServer) {
+        pullFromServer(false);
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [isLoadedFromServer, settings.apiUrl]);
 
   // Auto-scroll implementation
   useEffect(() => {
@@ -1212,6 +1326,62 @@ export default function App() {
                   placeholder="留空则直接调用 Gemini API"
                   className={`w-full p-1.5 rounded border text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-[#C9A66B] ${themeClasses.inputBg}`}
                 />
+              </div>
+
+              {/* Database Synchronization Status */}
+              <div className="pt-3 border-t border-[#E0D8D0]/10 space-y-2">
+                <div className="flex justify-between items-center text-[10px] font-sans uppercase">
+                  <span className="text-[#C9A66B] font-semibold tracking-wider flex items-center gap-1">
+                    <Sparkles className="w-3 h-3" /> 神魂同步状态
+                  </span>
+                  <button
+                    onClick={() => pullFromServer(true)}
+                    disabled={syncStatus === "syncing"}
+                    className="text-[9px] text-[#C9A66B]/80 hover:text-[#C9A66B] px-1.5 py-0.5 rounded bg-white/5 border border-[#C9A66B]/20 hover:border-[#C9A66B]/50 transition-all cursor-pointer flex items-center gap-0.5"
+                    title="立即拉取云端最新数据"
+                  >
+                    <RotateCcw className={`w-2.5 h-2.5 ${syncStatus === "syncing" ? "animate-spin" : ""}`} />
+                    <span>拉取同步</span>
+                  </button>
+                </div>
+                <div className={`p-2 rounded border text-[9px] flex items-center justify-between ${
+                  syncStatus === "synced" 
+                    ? "bg-[#C9A66B]/5 border-[#C9A66B]/20 text-[#C9A66B]" 
+                    : syncStatus === "syncing"
+                    ? "bg-blue-500/5 border-blue-500/20 text-blue-400"
+                    : syncStatus === "error"
+                    ? "bg-red-500/5 border-red-500/20 text-red-400"
+                    : "bg-white/5 border-[#E0D8D0]/10 text-[#E0D8D0]/50"
+                }`}>
+                  <span className="font-sans flex items-center gap-1">
+                    {syncStatus === "synced" && (
+                      <>
+                        <Check className="w-3 h-3 text-[#C9A66B]" />
+                        <span>已与服务器完成同步</span>
+                      </>
+                    )}
+                    {syncStatus === "syncing" && (
+                      <>
+                        <Loader2 className="w-3 h-3 animate-spin text-blue-400" />
+                        <span>正在同步神魂印记...</span>
+                      </>
+                    )}
+                    {syncStatus === "error" && (
+                      <>
+                        <span className="text-red-400 font-bold">⚠️</span>
+                        <span>同步失败，请检查网络或后端</span>
+                      </>
+                    )}
+                    {syncStatus === "idle" && (
+                      <>
+                        <span>暂无同步</span>
+                      </>
+                    )}
+                  </span>
+                  {syncStatus === "synced" && (
+                    <span className="opacity-50 font-mono scale-90">LAN</span>
+                  )}
+                </div>
               </div>
             </div>
 

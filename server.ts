@@ -1,8 +1,10 @@
 import express from "express";
 import path from "path";
 import dotenv from "dotenv";
+import os from "node:os";
 import { GoogleGenAI } from "@google/genai";
 import { createServer as createViteServer } from "vite";
+import { getSyncState, saveSyncState } from "./db";
 
 // Load environment variables
 dotenv.config();
@@ -189,6 +191,44 @@ async function startServer() {
     }
   });
 
+  // Database Synchronization Endpoints
+  app.get("/api/sync", (req, res) => {
+    try {
+      const state = getSyncState();
+      res.json(state);
+    } catch (err: any) {
+      console.error("Sync GET Error:", err);
+      res.status(500).json({ error: "获取同步状态失败" });
+    }
+  });
+
+  app.post("/api/sync", (req, res) => {
+    try {
+      const { chapters, selectedId, fateOptions } = req.body;
+      if (!Array.isArray(chapters)) {
+        return res.status(400).json({ error: "章节数据格式不正确" });
+      }
+      saveSyncState(chapters, selectedId || 1, fateOptions || []);
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("Sync POST Error:", err);
+      res.status(500).json({ error: "保存同步状态失败" });
+    }
+  });
+
+  // Helper to get local network IP
+  function getLocalIpAddress() {
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+      for (const iface of interfaces[name] || []) {
+        if (!iface.internal && iface.family === "IPv4") {
+          return iface.address;
+        }
+      }
+    }
+    return "localhost";
+  }
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -205,7 +245,9 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`[Server] Running at http://localhost:${PORT}`);
+    const localIp = getLocalIpAddress();
+    console.log(`[Server] Running locally at: http://localhost:${PORT}`);
+    console.log(`[Server] Running on LAN at:    http://${localIp}:${PORT}`);
   });
 }
 
