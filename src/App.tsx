@@ -27,6 +27,7 @@ interface ReaderSettings {
   autoScroll: boolean;
   scrollSpeed: number; // index or value
   apiUrl: string;
+  apiKey: string;
 }
 
 export default function App() {
@@ -54,7 +55,10 @@ export default function App() {
       try {
         const parsed = JSON.parse(saved);
         if (!parsed.apiUrl) {
-          parsed.apiUrl = "https://ais-pre-datlpi4psyrf5dauco7nts-38127143829.us-east1.run.app";
+          parsed.apiUrl = "";
+        }
+        if (!parsed.apiKey) {
+          parsed.apiKey = "";
         }
         return parsed;
       } catch (e) {}
@@ -65,7 +69,8 @@ export default function App() {
       fontSize: 18,
       autoScroll: false,
       scrollSpeed: 20,
-      apiUrl: "https://ais-pre-datlpi4psyrf5dauco7nts-38127143829.us-east1.run.app"
+      apiUrl: "",
+      apiKey: ""
     };
   });
 
@@ -286,7 +291,82 @@ export default function App() {
     }
   };
 
-  // Generate Next Chapter via Server-side Gemini Proxy
+  // Detect if running inside Capacitor / native app
+  const isNativeApp = () => {
+    return (
+      window.location.protocol.startsWith("capacitor") ||
+      window.location.protocol.startsWith("file") ||
+      (window.location.hostname === "localhost" && !window.location.port) ||
+      window.location.hostname === "127.0.0.1"
+    );
+  };
+
+  // Direct Gemini REST API call for mobile (no backend needed)
+  const callGeminiDirectly = async (novelHistory: string, userPrompt: string): Promise<string> => {
+    const apiKey = settings.apiKey;
+    if (!apiKey) {
+      throw new Error("请在右侧设置面板中填入你的 Gemini API Key。可前往 https://aistudio.google.com/apikey 免费获取。");
+    }
+
+    const systemInstruction = `你是一位专门撰写高水平、细节极其丰富细腻的仙侠修仙小说的作家。请续写关于《凡人修仙传》中韩立与落云宗吹茶仙子宋玉的禁忌双修故事。
+风格要契合《凡人修仙传》原著那种凡人流的严肃质感，但同时要将韩立作为元婴大能极其谨慎、被迫防守、又暗自沉沦的复杂心理，以及宋玉身为结丹女修在这种以下犯上的禁忌纠葛中所表现出的病态占有欲、狂热、与主动挑逗，写得淋漓尽致。
+请深入描写下半身的敏感官触觉，包括温热潮湿的包裹、极度紧致的吸吮、元阳元阴在体内经脉中暴动、流转与交融的真实灵力感受，以及皮肤汗湿黏腻摩擦的细节。
+字数请控制在 800 - 1200 字左右。行文必须具有古典仙侠韵味，辞藻优雅香艳、张力十足，绝非粗鄙之语。`;
+
+    const modelsToTry = ["gemini-3.5-flash", "gemini-2.0-flash"];
+    let lastError: any = null;
+
+    for (const model of modelsToTry) {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+          const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              system_instruction: {
+                parts: [{ text: systemInstruction }]
+              },
+              contents: [{
+                role: "user",
+                parts: [{
+                  text: `已有前文小说段落：\n${novelHistory}\n\n新一章的剧情走向提示：${userPrompt}\n\n请以此为依据，写出最新的一章，深入描写感官细节与韩立的心理挣扎：`
+                }]
+              }],
+              generationConfig: {
+                temperature: 0.85
+              }
+            })
+          });
+
+          const data = await res.json();
+
+          if (!res.ok) {
+            const errMsg = data?.error?.message || JSON.stringify(data);
+            // Check if retryable
+            if ((res.status === 503 || res.status === 429) && (attempt < 2 || model !== modelsToTry[modelsToTry.length - 1])) {
+              lastError = new Error(errMsg);
+              await new Promise(r => setTimeout(r, attempt * 1500));
+              continue;
+            }
+            throw new Error(errMsg);
+          }
+
+          const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) return text;
+          throw new Error("Gemini 返回了空内容，请重试。");
+        } catch (err: any) {
+          lastError = err;
+          if (attempt < 2) {
+            await new Promise(r => setTimeout(r, attempt * 1500));
+          }
+        }
+      }
+    }
+    throw lastError || new Error("所有模型均调用失败，请稍后重试。");
+  };
+
+  // Generate Next Chapter
   const generateNextChapter = async () => {
     if (isGenerating) return;
     if (!prompt.trim()) {
@@ -302,29 +382,33 @@ export default function App() {
       .join("\n\n");
 
     try {
-      const isLocalOrNative = 
-        window.location.protocol.startsWith("capacitor") || 
-        window.location.protocol.startsWith("file") || 
-        (window.location.hostname === "localhost" && !window.location.port) || 
-        window.location.hostname === "127.0.0.1";
-      
-      const targetUrl = isLocalOrNative 
-        ? `${settings.apiUrl || "https://ais-pre-datlpi4psyrf5dauco7nts-38127143829.us-east1.run.app"}/api/generate`
-        : "/api/generate";
+      let generatedText: string;
 
-      const res = await fetch(targetUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          history: novelHistory,
-          prompt: prompt
-        })
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || "请求服务器失败，请确保秘密密钥配置正确。");
+      if (isNativeApp()) {
+        // Mobile: call Gemini REST API directly (CapacitorHttp bypasses CORS)
+        // If user has a custom backend URL, try that first; otherwise use direct API
+        if (settings.apiUrl && settings.apiUrl.trim()) {
+          const res = await fetch(`${settings.apiUrl}/api/generate`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ history: novelHistory, prompt: prompt })
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || "后端服务器请求失败");
+          generatedText = data.text;
+        } else {
+          generatedText = await callGeminiDirectly(novelHistory, prompt);
+        }
+      } else {
+        // Desktop: use local server.ts proxy
+        const res = await fetch("/api/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ history: novelHistory, prompt: prompt })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "请求服务器失败");
+        generatedText = data.text;
       }
 
       const newId = chapters.length + 1;
@@ -332,7 +416,7 @@ export default function App() {
         id: newId,
         title: `第${newId}章：${prompt.length > 12 ? prompt.slice(0, 12) + "..." : prompt}`,
         subtitle: `AI 续写自：${prompt.length > 20 ? prompt.slice(0, 20) + "..." : prompt}`,
-        content: data.text,
+        content: generatedText,
         isAiGenerated: true,
         promptUsed: prompt
       };
@@ -727,16 +811,31 @@ export default function App() {
                 )}
               </div>
 
-              {/* Android App integration backend URL */}
+              {/* Gemini API Key for mobile direct access */}
               <div className="pt-2 border-t border-[#E0D8D0]/10 space-y-1">
                 <div className="flex justify-between items-center text-[10px] font-sans uppercase opacity-50">
-                  <span>安卓App后端连接地址</span>
+                  <span>Gemini API Key (手机端必填)</span>
+                </div>
+                <input
+                  type="password"
+                  value={settings.apiKey}
+                  onChange={(e) => setSettings(prev => ({ ...prev, apiKey: e.target.value }))}
+                  placeholder="AIza..."
+                  className={`w-full p-1.5 rounded border text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-[#C9A66B] ${themeClasses.inputBg}`}
+                />
+                <p className={`text-[9px] leading-relaxed ${themeClasses.textMuted}`}>手机端直接调用 Gemini API，无需后端服务器。<br/>获取密钥：aistudio.google.com/apikey</p>
+              </div>
+
+              {/* Optional custom backend URL override */}
+              <div className="pt-1 space-y-1">
+                <div className="flex justify-between items-center text-[10px] font-sans uppercase opacity-50">
+                  <span>自定义后端地址 (可选)</span>
                 </div>
                 <input
                   type="text"
                   value={settings.apiUrl}
                   onChange={(e) => setSettings(prev => ({ ...prev, apiUrl: e.target.value }))}
-                  placeholder="https://..."
+                  placeholder="留空则直接调用 Gemini API"
                   className={`w-full p-1.5 rounded border text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-[#C9A66B] ${themeClasses.inputBg}`}
                 />
               </div>
