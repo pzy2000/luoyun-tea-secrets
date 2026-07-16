@@ -80,6 +80,20 @@ export default function App() {
   const [loadingStep, setLoadingStep] = useState<string>("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Fate trajectory options state
+  const [fateOptions, setFateOptions] = useState<string[]>(() => {
+    const saved = localStorage.getItem("luoyun_fate_options");
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error("Failed to parse saved fate options", e);
+      }
+    }
+    return PRESET_PROMPTS;
+  });
+  const [isGeneratingOptions, setIsGeneratingOptions] = useState<boolean>(false);
+
   // Audio environment states
   const [ambientPlaying, setAmbientPlaying] = useState<boolean>(false);
   const [ambientVolume, setAmbientVolume] = useState<number>(0.2);
@@ -102,6 +116,11 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("luoyun_settings", JSON.stringify(settings));
   }, [settings]);
+
+  // Persist fate options
+  useEffect(() => {
+    localStorage.setItem("luoyun_fate_options", JSON.stringify(fateOptions));
+  }, [fateOptions]);
 
   // Auto-scroll implementation
   useEffect(() => {
@@ -274,6 +293,8 @@ export default function App() {
     if (confirm("确认重置吗？这将清除所有 AI 续写的章节，只保留落云宗原著。")) {
       setChapters(INITIAL_CHAPTERS);
       setSelectedId(1);
+      setFateOptions(PRESET_PROMPTS);
+      localStorage.removeItem("luoyun_fate_options");
     }
   };
 
@@ -287,7 +308,14 @@ export default function App() {
         id: idx + 1
       }));
       setChapters(reindexed);
-      setSelectedId(reindexed[reindexed.length - 1].id);
+      const lastChapter = reindexed[reindexed.length - 1];
+      setSelectedId(lastChapter.id);
+
+      if (lastChapter.id === 1) {
+        setFateOptions(PRESET_PROMPTS);
+      } else {
+        generateFateOptions(reindexed, lastChapter);
+      }
     }
   };
 
@@ -406,6 +434,195 @@ export default function App() {
     throw lastError || new Error("所有模型均调用失败，请稍后重试。");
   };
 
+  // Helper to parse JSON array or extract lines robustly
+  const extractOptions = (text: string): string[] => {
+    try {
+      let cleaned = text.trim();
+      if (cleaned.startsWith("```")) {
+        cleaned = cleaned.replace(/^```(json)?/, "").replace(/```$/, "").trim();
+      }
+      const parsed = JSON.parse(cleaned);
+      if (Array.isArray(parsed)) {
+        return parsed.map(item => String(item).trim()).filter(Boolean).slice(0, 5);
+      }
+    } catch (e) {
+      console.warn("[Options Parse] Failed to parse JSON array, attempting regex line extraction", e);
+    }
+
+    // Fallback: extract line by line
+    const lines = text.split(/\n+/);
+    const options: string[] = [];
+    for (let line of lines) {
+      // Remove common list formatting (e.g. "1. ", "- ", etc.)
+      const cleanedLine = line.replace(/^\s*[-*+\d.]+\s*/, "").replace(/[\[\]"']/g, "").trim();
+      if (cleanedLine.length > 5 && cleanedLine.length < 100) {
+        options.push(cleanedLine);
+      }
+    }
+    if (options.length >= 3) {
+      return options.slice(0, 5);
+    }
+    return PRESET_PROMPTS;
+  };
+
+  // Direct Gemini API call for generating options
+  const callGeminiForOptions = async (history: string, latestChapter: string): Promise<string> => {
+    const apiKey = settings.apiKey;
+    if (!apiKey) {
+      throw new Error("API Key 未设置");
+    }
+
+    const systemInstruction = `你是一位专门为仙侠修仙小说生成后续剧情选择分支的助手。请根据提供的小说前文历史以及刚刚生成的最新章节，推演并设计 5 个接下来的剧情推演方向选项（宿命轨迹）。
+每个选项字数控制在 15 到 35 字之间，要带有《凡人修仙传》原著那种严肃修仙、克制又暗流涌动的风格，以及韩立与宋玉之间暧昧、斗智、禁忌双修的张力。
+你必须只返回一个 JSON 数组，包含这 5 个选项。不要包含任何 markdown 代码块标记，如：
+["选项一", "选项二", "选项三", "选项四", "选项五"]`;
+
+    const modelsToTry = [
+      "gemini-3.5-flash",
+      "gemini-flash-latest",
+      "gemini-3.1-flash-lite",
+      "gemini-2.5-flash-lite",
+      "gemini-2.5-flash"
+    ];
+    const maxRetriesPerModel = 2;
+    let lastError: any = null;
+
+    for (const model of modelsToTry) {
+      for (let attempt = 1; attempt <= maxRetriesPerModel; attempt++) {
+        try {
+          console.log(`[Gemini Direct Options] Attempting with model: ${model} (attempt ${attempt}/${maxRetriesPerModel})`);
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+          const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              system_instruction: {
+                parts: [{ text: systemInstruction }]
+              },
+              contents: [{
+                role: "user",
+                parts: [{
+                  text: `前文小说历史：\n${history}\n\n最新生成的章节内容：\n${latestChapter}\n\n请根据上述内容，推演下一步的 5 个剧情走向选项，以 JSON 数组格式返回：`
+                }]
+              }],
+              generationConfig: {
+                temperature: 0.85,
+                responseMimeType: "application/json"
+              }
+            })
+          });
+
+          const data = await res.json();
+
+          if (!res.ok) {
+            const errMsg = data?.error?.message || JSON.stringify(data);
+            const status = res.status;
+            
+            const isRetryable = status === 503 || status === 429 ||
+                                errMsg.toLowerCase().includes("limit") ||
+                                errMsg.toLowerCase().includes("quota") ||
+                                errMsg.toLowerCase().includes("exhausted") ||
+                                errMsg.toLowerCase().includes("unavailable") ||
+                                errMsg.toLowerCase().includes("overloaded");
+
+            console.warn(`[Gemini Direct Options] Error with model ${model} (status ${status}):`, errMsg);
+
+            if (isRetryable && attempt < maxRetriesPerModel) {
+              const delay = attempt * 1500;
+              await new Promise(r => setTimeout(r, delay));
+              continue;
+            } else {
+              lastError = new Error(errMsg);
+              break;
+            }
+          }
+
+          const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) {
+            console.log(`[Gemini Direct Options] Generation succeeded with model: ${model}`);
+            return text;
+          }
+          throw new Error("Gemini 返回了空内容，请重试。");
+        } catch (err: any) {
+          lastError = err;
+          console.warn(`[Gemini Direct Options] Exception with model ${model} (attempt ${attempt}/${maxRetriesPerModel}):`, err.message || err);
+          
+          const errStr = String(err.message || err).toLowerCase();
+          const isRetryable = errStr.includes("503") || 
+                              errStr.includes("429") || 
+                              errStr.includes("limit") || 
+                              errStr.includes("quota") || 
+                              errStr.includes("exhausted") || 
+                              errStr.includes("unavailable") || 
+                              errStr.includes("overloaded") ||
+                              errStr.includes("fetch") ||
+                              errStr.includes("network");
+
+          if (isRetryable && attempt < maxRetriesPerModel) {
+            const delay = attempt * 1500;
+            await new Promise(r => setTimeout(r, delay));
+          } else {
+            break;
+          }
+        }
+      }
+    }
+    throw lastError || new Error("所有模型生成选项均调用失败，请重试。");
+  };
+
+  // Main coordinator function to generate options
+  const generateFateOptions = async (historyChapters: Chapter[], currentCap: Chapter) => {
+    const hasApiKey = settings.apiKey && settings.apiKey.trim() !== "";
+    const hasCustomUrl = settings.apiUrl && settings.apiUrl.trim() !== "";
+    const isLocalDev = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+    const useLocalProxy = isLocalDev && !isNativeApp();
+
+    if (!hasApiKey && !hasCustomUrl && !useLocalProxy) {
+      console.log("[Fate Options] No Gemini config found, skipping auto-generation.");
+      return;
+    }
+
+    setIsGeneratingOptions(true);
+    try {
+      const historyText = historyChapters
+        .filter(c => c.id < currentCap.id)
+        .map(c => `【${c.title}】\n${c.content}`)
+        .join("\n\n");
+      const latestText = `【${currentCap.title}】\n${currentCap.content}`;
+
+      let resultText = "";
+
+      if (hasCustomUrl) {
+        const res = await fetch(`${settings.apiUrl}/api/generate-options`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ history: historyText, latestChapter: latestText })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "后端生成选项失败");
+        resultText = data.options;
+      } else if (useLocalProxy) {
+        const res = await fetch("/api/generate-options", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ history: historyText, latestChapter: latestText })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "代理生成选项失败");
+        resultText = data.options;
+      } else {
+        resultText = await callGeminiForOptions(historyText, latestText);
+      }
+
+      const options = extractOptions(resultText);
+      setFateOptions(options);
+    } catch (err: any) {
+      console.warn("自动生成剧情走向选项失败:", err.message || err);
+    } finally {
+      setIsGeneratingOptions(false);
+    }
+  };
+
   // Generate Next Chapter
   const generateNextChapter = async () => {
     if (isGenerating) return;
@@ -464,13 +681,17 @@ export default function App() {
         promptUsed: prompt
       };
 
-      setChapters(prev => [...prev, newChapter]);
+      const updatedChapters = [...chapters, newChapter];
+      setChapters(updatedChapters);
       setSelectedId(newId);
       setPrompt("");
 
       if (scrollContainerRef.current) {
         scrollContainerRef.current.scrollTop = 0;
       }
+
+      // Automatically generate new options for the next step
+      generateFateOptions(updatedChapters, newChapter);
     } catch (err: any) {
       console.error(err);
       setErrorMsg(err.message || "生成失败，可能您的 GEMINI_API_KEY 无效或受限。");
@@ -895,20 +1116,34 @@ export default function App() {
               </p>
               
               <div className="space-y-1 max-h-[160px] overflow-y-auto pr-1">
-                {PRESET_PROMPTS.map((preset, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => selectPresetPrompt(preset)}
-                    className={`w-full text-left p-2 rounded border text-[10px] transition-all flex items-start gap-1 font-serif ${
-                      prompt === preset 
-                        ? "border-[#C9A66B] text-[#C9A66B] bg-[#C9A66B]/5 font-medium" 
-                        : "border-transparent text-[#E0D8D0]/70 hover:bg-white/5 hover:text-[#E0D8D0]"
-                    }`}
-                  >
-                    <CornerDownRight className="w-2.5 h-2.5 shrink-0 mt-0.5 opacity-40" />
-                    <span className="line-clamp-2 leading-relaxed">{preset}</span>
-                  </button>
-                ))}
+                {isGeneratingOptions ? (
+                  <div className="space-y-2 py-1 animate-pulse">
+                    {[1, 2, 3, 4, 5].map((i) => (
+                      <div key={i} className="flex items-center gap-2 p-1.5 rounded border border-transparent">
+                        <Loader2 className="w-2.5 h-2.5 animate-spin text-[#C9A66B]/60 shrink-0" />
+                        <div className="h-2.5 bg-white/10 rounded w-5/6"></div>
+                      </div>
+                    ))}
+                    <p className={`text-[9px] text-[#C9A66B]/60 text-center font-sans tracking-wider pt-1`}>
+                      天机推演中，正在孕育新的宿命轨迹...
+                    </p>
+                  </div>
+                ) : (
+                  fateOptions.map((preset, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => selectPresetPrompt(preset)}
+                      className={`w-full text-left p-2 rounded border text-[10px] transition-all flex items-start gap-1 font-serif ${
+                        prompt === preset 
+                          ? "border-[#C9A66B] text-[#C9A66B] bg-[#C9A66B]/5 font-medium" 
+                          : "border-transparent text-[#E0D8D0]/70 hover:bg-white/5 hover:text-[#E0D8D0]"
+                      }`}
+                    >
+                      <CornerDownRight className="w-2.5 h-2.5 shrink-0 mt-0.5 opacity-40" />
+                      <span className="line-clamp-2 leading-relaxed">{preset}</span>
+                    </button>
+                  ))
+                )}
               </div>
             </div>
 

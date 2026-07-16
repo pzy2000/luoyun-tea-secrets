@@ -147,6 +147,46 @@ async function startServer() {
     }
   });
 
+  // Story options generation endpoint
+  app.post("/api/generate-options", async (req, res) => {
+    try {
+      if (!ai) {
+        return res.status(500).json({ 
+          error: "Gemini API key is not configured in the application environment settings." 
+        });
+      }
+
+      const { history, latestChapter } = req.body;
+
+      const systemInstruction = `你是一位专门为仙侠修仙小说生成后续剧情选择分支的助手。请根据提供的小说前文历史以及刚刚生成的最新章节，推演并设计 5 个接下来的剧情推演方向选项（宿命轨迹）。
+每个选项字数控制在 15 到 35 字之间，要带有《凡人修仙传》原著那种严肃修仙、克制又暗流涌动的风格，以及韩立与宋玉之间暧昧、斗智、禁忌双修的张力。
+你必须只返回一个 JSON 数组，包含这 5 个选项。不要包含任何 markdown 代码块标记，如：
+["选项一", "选项二", "选项三", "选项四", "选项五"]`;
+
+      const response = await generateWithFallbackAndRetry(ai, {
+        contents: [
+          { 
+            role: 'user', 
+            parts: [{ 
+              text: `前文小说历史：\n${history}\n\n最新生成的章节内容：\n${latestChapter}\n\n请根据上述内容，推演下一步的 5 个剧情走向选项，以 JSON 数组格式返回：` 
+            }] 
+          }
+        ],
+        config: {
+          systemInstruction,
+          temperature: 0.85,
+          responseMimeType: "application/json"
+        }
+      });
+
+      const generatedText = response.text || "[]";
+      res.json({ options: generatedText });
+    } catch (err: any) {
+      console.error("Gemini Options Generation Error:", err);
+      res.status(500).json({ error: err.message || "服务器生成剧情选项失败" });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
