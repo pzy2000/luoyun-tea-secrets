@@ -313,12 +313,21 @@ export default function App() {
 请深入描写下半身的敏感官触觉，包括温热潮湿的包裹、极度紧致的吸吮、元阳元阴在体内经脉中暴动、流转与交融的真实灵力感受，以及皮肤汗湿黏腻摩擦的细节。
 字数请控制在 800 - 1200 字左右。行文必须具有古典仙侠韵味，辞藻优雅香艳、张力十足，绝非粗鄙之语。`;
 
-    const modelsToTry = ["gemini-3.5-flash", "gemini-2.0-flash"];
+    const modelsToTry = [
+      "gemini-3.5-flash",
+      "gemini-flash-latest",
+      "gemini-3.1-flash-lite",
+      "gemma-4-31b-it",
+      "gemini-2.5-flash-lite",
+      "gemini-2.5-flash"
+    ];
+    const maxRetriesPerModel = 2;
     let lastError: any = null;
 
     for (const model of modelsToTry) {
-      for (let attempt = 1; attempt <= 2; attempt++) {
+      for (let attempt = 1; attempt <= maxRetriesPerModel; attempt++) {
         try {
+          console.log(`[Gemini Direct] Attempting generation with model: ${model} (attempt ${attempt}/${maxRetriesPerModel})`);
           const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
           const res = await fetch(url, {
             method: "POST",
@@ -343,22 +352,53 @@ export default function App() {
 
           if (!res.ok) {
             const errMsg = data?.error?.message || JSON.stringify(data);
-            // Check if retryable
-            if ((res.status === 503 || res.status === 429) && (attempt < 2 || model !== modelsToTry[modelsToTry.length - 1])) {
-              lastError = new Error(errMsg);
-              await new Promise(r => setTimeout(r, attempt * 1500));
+            const status = res.status;
+            
+            const isRetryable = status === 503 || status === 429 ||
+                                errMsg.toLowerCase().includes("limit") ||
+                                errMsg.toLowerCase().includes("quota") ||
+                                errMsg.toLowerCase().includes("exhausted") ||
+                                errMsg.toLowerCase().includes("unavailable") ||
+                                errMsg.toLowerCase().includes("overloaded");
+
+            console.warn(`[Gemini Direct] Error with model ${model} (status ${status}):`, errMsg);
+
+            if (isRetryable && attempt < maxRetriesPerModel) {
+              const delay = attempt * 1500;
+              await new Promise(r => setTimeout(r, delay));
               continue;
+            } else {
+              lastError = new Error(errMsg);
+              break;
             }
-            throw new Error(errMsg);
           }
 
           const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (text) return text;
+          if (text) {
+            console.log(`[Gemini Direct] Generation succeeded with model: ${model}`);
+            return text;
+          }
           throw new Error("Gemini 返回了空内容，请重试。");
         } catch (err: any) {
           lastError = err;
-          if (attempt < 2) {
-            await new Promise(r => setTimeout(r, attempt * 1500));
+          console.warn(`[Gemini Direct] Exception with model ${model} (attempt ${attempt}/${maxRetriesPerModel}):`, err.message || err);
+          
+          const errStr = String(err.message || err).toLowerCase();
+          const isRetryable = errStr.includes("503") || 
+                              errStr.includes("429") || 
+                              errStr.includes("limit") || 
+                              errStr.includes("quota") || 
+                              errStr.includes("exhausted") || 
+                              errStr.includes("unavailable") || 
+                              errStr.includes("overloaded") ||
+                              errStr.includes("fetch") ||
+                              errStr.includes("network");
+
+          if (isRetryable && attempt < maxRetriesPerModel) {
+            const delay = attempt * 1500;
+            await new Promise(r => setTimeout(r, delay));
+          } else {
+            break;
           }
         }
       }

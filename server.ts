@@ -67,7 +67,14 @@ async function startServer() {
 
       // Helper function to handle generation with retries and fallback
       const generateWithFallbackAndRetry = async (aiClient: GoogleGenAI, params: any) => {
-        const modelsToTry = ["gemini-3.5-flash", "gemini-flash-latest"];
+        const modelsToTry = [
+          "gemini-3.5-flash",
+          "gemini-flash-latest",
+          "gemini-3.1-flash-lite",
+          "gemma-4-31b-it",
+          "gemini-2.5-flash-lite",
+          "gemini-2.5-flash"
+        ];
         const maxRetriesPerModel = 2;
         let lastError: any = null;
 
@@ -87,23 +94,28 @@ async function startServer() {
               lastError = err;
               console.warn(`[Gemini] Error with model ${model} (attempt ${attempt}/${maxRetriesPerModel}):`, err.message || err);
               
-              const errStr = JSON.stringify(err);
-              const isRetryable = err.status === 503 || 
-                                  err.status === 429 || 
-                                  (err.message && (
-                                    err.message.includes("503") || 
-                                    err.message.includes("429") || 
-                                    err.message.includes("demand") || 
-                                    err.message.includes("temporarily") ||
-                                    err.message.includes("UNAVAILABLE")
-                                  )) ||
-                                  errStr.includes("503") ||
-                                  errStr.includes("UNAVAILABLE");
+              const errStr = String(err.message || err).toLowerCase();
+              const status = err.status || (err.statusText ? parseInt(err.statusText) : null);
+              
+              const isRetryable = status === 503 || 
+                                  status === 429 || 
+                                  errStr.includes("503") || 
+                                  errStr.includes("429") || 
+                                  errStr.includes("limit") || 
+                                  errStr.includes("quota") || 
+                                  errStr.includes("exhausted") || 
+                                  errStr.includes("unavailable") || 
+                                  errStr.includes("overloaded") ||
+                                  errStr.includes("demand") ||
+                                  errStr.includes("temporarily");
 
-              if (isRetryable && (attempt < maxRetriesPerModel || model !== modelsToTry[modelsToTry.length - 1])) {
+              if (isRetryable && attempt < maxRetriesPerModel) {
                 const delay = attempt * 1500;
-                console.log(`[Gemini] Retrying in ${delay}ms...`);
+                console.log(`[Gemini] Error is retryable. Retrying in ${delay}ms...`);
                 await new Promise((resolve) => setTimeout(resolve, delay));
+              } else {
+                console.log(`[Gemini] Skipping further attempts for model ${model} due to ${isRetryable ? "exhausted retries" : "non-retryable error"}. Falling back to next model.`);
+                break;
               }
             }
           }
