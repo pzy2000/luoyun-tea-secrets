@@ -635,8 +635,10 @@ export default function App() {
 
       const options = extractOptions(resultText);
       setFateOptions(options);
+      setErrorMsg(null);
     } catch (err: any) {
       console.warn("自动生成剧情走向选项失败:", err.message || err);
+      setErrorMsg(err.message || "自动生成剧情走向选项失败");
     } finally {
       setIsGeneratingOptions(false);
     }
@@ -1140,10 +1142,20 @@ export default function App() {
 
             {/* Middle Section: AI plot choices */}
             <div className="space-y-3 pt-4 border-t border-[#E0D8D0]/10">
-              <h3 className="text-xs font-semibold uppercase tracking-[0.25em] text-[#C9A66B] flex items-center gap-1.5 font-sans">
-                <Compass className="w-3.5 h-3.5" />
-                <span>剧情推演方向</span>
-              </h3>
+              <div className="flex justify-between items-center">
+                <h3 className="text-xs font-semibold uppercase tracking-[0.25em] text-[#C9A66B] flex items-center gap-1.5 font-sans">
+                  <Compass className="w-3.5 h-3.5" />
+                  <span>剧情推演方向</span>
+                </h3>
+                <button
+                  onClick={() => generateFateOptions(chapters, currentChapter)}
+                  disabled={isGeneratingOptions || isGenerating}
+                  className={`p-1 rounded text-[#C9A66B]/70 hover:text-[#C9A66B] hover:bg-white/5 disabled:opacity-30 disabled:hover:bg-transparent transition-all`}
+                  title="重新推演天机"
+                >
+                  <RotateCcw className={`w-3.5 h-3.5 ${isGeneratingOptions ? "animate-spin" : ""}`} />
+                </button>
+              </div>
               <p className={`text-[10px] text-[#E0D8D0]/50 font-sans leading-relaxed`}>
                 选择以下宿命轨迹，引导神魂：
               </p>

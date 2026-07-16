@@ -40,6 +40,65 @@ async function startServer() {
     });
   }
 
+  // Helper function to handle generation with retries and fallback
+  const generateWithFallbackAndRetry = async (aiClient: GoogleGenAI, params: any) => {
+    const modelsToTry = [
+      "gemini-3.5-flash",
+      "gemini-flash-latest",
+      "gemini-3.1-flash-lite",
+      "gemma-4-31b-it",
+      "gemini-2.5-flash-lite",
+      "gemini-2.5-flash"
+    ];
+    const maxRetriesPerModel = 2;
+    let lastError: any = null;
+
+    for (const model of modelsToTry) {
+      for (let attempt = 1; attempt <= maxRetriesPerModel; attempt++) {
+        try {
+          console.log(`[Gemini] Attempting generation with model: ${model} (attempt ${attempt}/${maxRetriesPerModel})`);
+          const response = await aiClient.models.generateContent({
+            ...params,
+            model: model,
+          });
+          if (response && response.text) {
+            console.log(`[Gemini] Generation succeeded with model: ${model}`);
+            return response;
+          }
+        } catch (err: any) {
+          lastError = err;
+          console.warn(`[Gemini] Error with model ${model} (attempt ${attempt}/${maxRetriesPerModel}):`, err.message || err);
+          
+          const errStr = String(err.message || err).toLowerCase();
+          const status = err.status || (err.statusText ? parseInt(err.statusText) : null);
+          
+          const isRetryable = status === 503 || 
+                              status === 429 || 
+                              errStr.includes("503") || 
+                              errStr.includes("429") || 
+                              errStr.includes("limit") || 
+                              errStr.includes("quota") || 
+                              errStr.includes("exhausted") || 
+                              errStr.includes("unavailable") || 
+                              errStr.includes("overloaded") ||
+                              errStr.includes("demand") ||
+                              errStr.includes("temporarily");
+
+          if (isRetryable && attempt < maxRetriesPerModel) {
+            const delay = attempt * 1500;
+            console.log(`[Gemini] Error is retryable. Retrying in ${delay}ms...`);
+            await new Promise((resolve) => setTimeout(resolve, delay));
+          } else {
+            console.log(`[Gemini] Skipping further attempts for model ${model} due to ${isRetryable ? "exhausted retries" : "non-retryable error"}. Falling back to next model.`);
+            break;
+          }
+        }
+      }
+    }
+
+    throw lastError || new Error("Failed to generate content after trying multiple models and retrying.");
+  };
+
   // Health check endpoint
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", geminiConfigured: !!apiKey });
@@ -65,64 +124,7 @@ async function startServer() {
 请深入描写下半身的敏感官触觉，包括温热潮湿的包裹、极度紧致的吸吮、元阳元阴在体内经脉中暴动、流转与交融的真实灵力感受，以及皮肤汗湿黏腻摩擦的细节。
 字数请控制在 800 - 1200 字左右。行文必须具有古典仙侠韵味，辞藻优雅香艳、张力十足，绝非粗鄙之语。`;
 
-      // Helper function to handle generation with retries and fallback
-      const generateWithFallbackAndRetry = async (aiClient: GoogleGenAI, params: any) => {
-        const modelsToTry = [
-          "gemini-3.5-flash",
-          "gemini-flash-latest",
-          "gemini-3.1-flash-lite",
-          "gemma-4-31b-it",
-          "gemini-2.5-flash-lite",
-          "gemini-2.5-flash"
-        ];
-        const maxRetriesPerModel = 2;
-        let lastError: any = null;
 
-        for (const model of modelsToTry) {
-          for (let attempt = 1; attempt <= maxRetriesPerModel; attempt++) {
-            try {
-              console.log(`[Gemini] Attempting generation with model: ${model} (attempt ${attempt}/${maxRetriesPerModel})`);
-              const response = await aiClient.models.generateContent({
-                ...params,
-                model: model,
-              });
-              if (response && response.text) {
-                console.log(`[Gemini] Generation succeeded with model: ${model}`);
-                return response;
-              }
-            } catch (err: any) {
-              lastError = err;
-              console.warn(`[Gemini] Error with model ${model} (attempt ${attempt}/${maxRetriesPerModel}):`, err.message || err);
-              
-              const errStr = String(err.message || err).toLowerCase();
-              const status = err.status || (err.statusText ? parseInt(err.statusText) : null);
-              
-              const isRetryable = status === 503 || 
-                                  status === 429 || 
-                                  errStr.includes("503") || 
-                                  errStr.includes("429") || 
-                                  errStr.includes("limit") || 
-                                  errStr.includes("quota") || 
-                                  errStr.includes("exhausted") || 
-                                  errStr.includes("unavailable") || 
-                                  errStr.includes("overloaded") ||
-                                  errStr.includes("demand") ||
-                                  errStr.includes("temporarily");
-
-              if (isRetryable && attempt < maxRetriesPerModel) {
-                const delay = attempt * 1500;
-                console.log(`[Gemini] Error is retryable. Retrying in ${delay}ms...`);
-                await new Promise((resolve) => setTimeout(resolve, delay));
-              } else {
-                console.log(`[Gemini] Skipping further attempts for model ${model} due to ${isRetryable ? "exhausted retries" : "non-retryable error"}. Falling back to next model.`);
-                break;
-              }
-            }
-          }
-        }
-
-        throw lastError || new Error("Failed to generate content after trying multiple models and retrying.");
-      };
 
       const response = await generateWithFallbackAndRetry(ai, {
         contents: [
