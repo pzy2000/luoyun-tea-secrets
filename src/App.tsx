@@ -63,6 +63,9 @@ export default function App() {
         if (!parsed.apiKey) {
           parsed.apiKey = "";
         }
+        if (parsed.scrollSpeed === undefined || parsed.scrollSpeed === 20) {
+          parsed.scrollSpeed = 200;
+        }
         return parsed;
       } catch (e) {}
     }
@@ -71,7 +74,7 @@ export default function App() {
       fontFamily: "font-serif",
       fontSize: 18,
       autoScroll: false,
-      scrollSpeed: 20,
+      scrollSpeed: 200,
       apiUrl: "",
       apiKey: ""
     };
@@ -248,8 +251,17 @@ export default function App() {
         clearInterval(scrollIntervalRef.current);
       }
 
-      // Convert speed setting (1 to 50) to millisecond intervals
-      const intervalMs = Math.max(10, 100 - settings.scrollSpeed);
+      // Calculate step and intervalMs dynamically based on speed (1 to 350)
+      let intervalMs = 20;
+      let step = 1;
+      
+      if (settings.scrollSpeed < 50) {
+        step = 1;
+        intervalMs = Math.max(20, Math.round(1000 / settings.scrollSpeed));
+      } else {
+        step = Math.round(settings.scrollSpeed / 50);
+        intervalMs = Math.max(10, Math.round(1000 / (settings.scrollSpeed / step)));
+      }
       
       scrollIntervalRef.current = window.setInterval(() => {
         if (container) {
@@ -257,7 +269,7 @@ export default function App() {
           if (container.scrollTop + container.clientHeight >= container.scrollHeight - 5) {
             setSettings(prev => ({ ...prev, autoScroll: false }));
           } else {
-            container.scrollTop += 1;
+            container.scrollTop += step;
           }
         }
       }, intervalMs);
@@ -1290,7 +1302,7 @@ export default function App() {
                     <input
                       type="range"
                       min="1"
-                      max="50"
+                      max="350"
                       value={settings.scrollSpeed}
                       onChange={(e) => setSettings(prev => ({ ...prev, scrollSpeed: parseInt(e.target.value) }))}
                       className="w-full h-[1px] bg-[#E0D8D0]/10 appearance-none cursor-pointer accent-[#C9A66B]"
