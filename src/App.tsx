@@ -574,11 +574,10 @@ export default function App() {
   const generateFateOptions = async (historyChapters: Chapter[], currentCap: Chapter) => {
     const hasApiKey = settings.apiKey && settings.apiKey.trim() !== "";
     const hasCustomUrl = settings.apiUrl && settings.apiUrl.trim() !== "";
-    const isLocalDev = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
-    const useLocalProxy = isLocalDev && !isNativeApp();
+    const isNative = isNativeApp();
 
-    if (!hasApiKey && !hasCustomUrl && !useLocalProxy) {
-      console.log("[Fate Options] No Gemini config found, skipping auto-generation.");
+    if (!hasApiKey && !hasCustomUrl && isNative) {
+      console.log("[Fate Options] No API key for mobile, skipping options generation.");
       return;
     }
 
@@ -591,6 +590,7 @@ export default function App() {
       const latestText = `【${currentCap.title}】\n${currentCap.content}`;
 
       let resultText = "";
+      let calledServer = false;
 
       if (hasCustomUrl) {
         const res = await fetch(`${settings.apiUrl}/api/generate-options`, {
@@ -601,16 +601,35 @@ export default function App() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "后端生成选项失败");
         resultText = data.options;
-      } else if (useLocalProxy) {
-        const res = await fetch("/api/generate-options", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ history: historyText, latestChapter: latestText })
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "代理生成选项失败");
-        resultText = data.options;
-      } else {
+      } else if (!isNative) {
+        // Browser version: Try relative Express server proxy first
+        try {
+          const res = await fetch("/api/generate-options", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ history: historyText, latestChapter: latestText })
+          });
+          if (res.status === 404) {
+            calledServer = false;
+          } else {
+            calledServer = true;
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || "代理生成选项失败");
+            resultText = data.options;
+          }
+        } catch (e) {
+          console.warn("Failed to call server options API, falling back to direct call:", e);
+          calledServer = false;
+          if (!hasApiKey) {
+            throw e;
+          }
+        }
+      }
+
+      if (!hasCustomUrl && (isNative || !calledServer)) {
+        if (!hasApiKey) {
+          throw new Error("直连/静态部署模式下，请先填入 Gemini API Key。");
+        }
         resultText = await callGeminiForOptions(historyText, latestText);
       }
 
@@ -639,12 +658,11 @@ export default function App() {
       .join("\n\n");
 
     try {
-      let generatedText: string;
+      let generatedText: string = "";
 
       const hasCustomUrl = settings.apiUrl && settings.apiUrl.trim();
       const isNative = isNativeApp();
-      const isLocalDev = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
-      const useLocalProxy = isLocalDev && !isNative;
+      let calledServer = false;
 
       if (hasCustomUrl) {
         // Call custom backend API (either mobile or desktop)
@@ -656,17 +674,32 @@ export default function App() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "后端服务器请求失败");
         generatedText = data.text;
-      } else if (useLocalProxy) {
-        // Desktop local dev: use local Express server.ts proxy
-        const res = await fetch("/api/generate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ history: novelHistory, prompt: prompt })
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "请求服务器失败");
-        generatedText = data.text;
-      } else {
+      } else if (!isNative) {
+        // Browser version: Try relative Express server proxy first
+        try {
+          const res = await fetch("/api/generate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ history: novelHistory, prompt: prompt })
+          });
+          if (res.status === 404) {
+            calledServer = false;
+          } else {
+            calledServer = true;
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || "请求服务器失败");
+            generatedText = data.text;
+          }
+        } catch (e: any) {
+          console.warn("Failed to call server API, falling back to direct call:", e);
+          calledServer = false;
+          if (!settings.apiKey) {
+            throw e;
+          }
+        }
+      }
+
+      if (!hasCustomUrl && (isNative || !calledServer)) {
         // Mobile app or static web deployment (e.g. GitHub Pages): call Gemini REST API directly
         generatedText = await callGeminiDirectly(novelHistory, prompt);
       }
@@ -1075,10 +1108,10 @@ export default function App() {
                 )}
               </div>
 
-              {/* Gemini API Key for mobile direct access */}
+              {/* Gemini API Key for mobile/static direct access */}
               <div className="pt-2 border-t border-[#E0D8D0]/10 space-y-1">
                 <div className="flex justify-between items-center text-[10px] font-sans uppercase opacity-50">
-                  <span>Gemini API Key (手机端必填)</span>
+                  <span>Gemini API Key (静态部署/手机端必填)</span>
                 </div>
                 <input
                   type="password"
@@ -1087,7 +1120,7 @@ export default function App() {
                   placeholder="AIza..."
                   className={`w-full p-1.5 rounded border text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-[#C9A66B] ${themeClasses.inputBg}`}
                 />
-                <p className={`text-[9px] leading-relaxed ${themeClasses.textMuted}`}>静态网页端 / 手机端直接调用 Gemini API，无需后端服务器。<br/>获取密钥：aistudio.google.com/apikey</p>
+                <p className={`text-[9px] leading-relaxed ${themeClasses.textMuted}`}>静态部署网页端 / 手机端直连调用 Gemini API，无需后端服务器。<br/>获取密钥：aistudio.google.com/apikey</p>
               </div>
 
               {/* Optional custom backend URL override */}
