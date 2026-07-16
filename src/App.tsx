@@ -384,23 +384,23 @@ export default function App() {
     try {
       let generatedText: string;
 
-      if (isNativeApp()) {
-        // Mobile: call Gemini REST API directly (CapacitorHttp bypasses CORS)
-        // If user has a custom backend URL, try that first; otherwise use direct API
-        if (settings.apiUrl && settings.apiUrl.trim()) {
-          const res = await fetch(`${settings.apiUrl}/api/generate`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ history: novelHistory, prompt: prompt })
-          });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error || "后端服务器请求失败");
-          generatedText = data.text;
-        } else {
-          generatedText = await callGeminiDirectly(novelHistory, prompt);
-        }
-      } else {
-        // Desktop: use local server.ts proxy
+      const hasCustomUrl = settings.apiUrl && settings.apiUrl.trim();
+      const isNative = isNativeApp();
+      const isLocalDev = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+      const useLocalProxy = isLocalDev && !isNative;
+
+      if (hasCustomUrl) {
+        // Call custom backend API (either mobile or desktop)
+        const res = await fetch(`${settings.apiUrl}/api/generate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ history: novelHistory, prompt: prompt })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "后端服务器请求失败");
+        generatedText = data.text;
+      } else if (useLocalProxy) {
+        // Desktop local dev: use local Express server.ts proxy
         const res = await fetch("/api/generate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -409,6 +409,9 @@ export default function App() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "请求服务器失败");
         generatedText = data.text;
+      } else {
+        // Mobile app or static web deployment (e.g. GitHub Pages): call Gemini REST API directly
+        generatedText = await callGeminiDirectly(novelHistory, prompt);
       }
 
       const newId = chapters.length + 1;
@@ -823,7 +826,7 @@ export default function App() {
                   placeholder="AIza..."
                   className={`w-full p-1.5 rounded border text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-[#C9A66B] ${themeClasses.inputBg}`}
                 />
-                <p className={`text-[9px] leading-relaxed ${themeClasses.textMuted}`}>手机端直接调用 Gemini API，无需后端服务器。<br/>获取密钥：aistudio.google.com/apikey</p>
+                <p className={`text-[9px] leading-relaxed ${themeClasses.textMuted}`}>静态网页端 / 手机端直接调用 Gemini API，无需后端服务器。<br/>获取密钥：aistudio.google.com/apikey</p>
               </div>
 
               {/* Optional custom backend URL override */}
